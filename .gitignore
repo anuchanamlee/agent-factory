@@ -1,0 +1,9 @@
+# โปรเจคที่ pipeline สร้างออกมา + state/log ของแต่ละรัน
+runs/
+
+# ของที่ agent อาจทิ้งไว้
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
