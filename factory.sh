@@ -26,6 +26,11 @@
 #                                    make no model call - for iterating on the
 #                                    phase prompts without spending quota
 #   FACTORY_NOTES_LIMIT=6000         bytes of NOTES.md carried into a prompt
+#
+# Every attempt appends a row to runs/<name>/.factory/metrics.tsv (phase, model,
+# effort, attempt, pass/fail, seconds, prompt bytes). ./measure.sh runs a spec
+# several times and summarises those rows - which phase needs a retry, which one
+# needs a human, and whether that is getting better or worse.
 
 set -euo pipefail
 
@@ -56,6 +61,16 @@ ALLOWED_TOOLS='Bash Edit Write Read Glob Grep'
 
 die() { printf '\n[factory] ERROR: %s\n' "$*" >&2; exit 1; }
 say() { printf '\n[factory] %s\n' "$*"; }
+
+# One tab-separated line per attempt, so a run can be measured afterwards
+# instead of being reconstructed by reading six logs. TSV rather than JSON
+# because awk is everywhere and jq is not.
+metric() {
+  # phase model effort attempt result seconds prompt_bytes
+  [ -s "$META_DIR/metrics.tsv" ] || \
+    printf 'started_at\tphase\tmodel\teffort\tattempt\tresult\tseconds\tprompt_bytes\n' > "$META_DIR/metrics.tsv"
+  { printf '%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; printf '\t%s' "$@"; printf '\n'; } >> "$META_DIR/metrics.tsv"
+}
 
 # ---------------------------------------------------------------- args
 SPEC_ARG="${1:-}"
@@ -183,6 +198,8 @@ run_phase() {
     local prompt_file="$META_DIR/logs/$phase-a$attempt.prompt.md"
     local out_file="$META_DIR/logs/$phase-a$attempt.out.txt"
     local gate_file="$META_DIR/logs/$phase-a$attempt.gate.txt"
+    local t0 t1
+    t0="$(date +%s)"
 
     build_prompt "$phase" "$failure" > "$prompt_file"
 
@@ -202,11 +219,15 @@ run_phase() {
     say "gate: $gate"
     if ( FACTORY_DEPLOY_TARGET="$DEPLOY_TARGET" \
          bash "$FACTORY_DIR/gates/$gate.sh" "$PROJECT_DIR" ) > "$gate_file" 2>&1; then
+      t1="$(date +%s)"
       tail -n 5 "$gate_file"
       touch "$META_DIR/done-$phase"
+      metric "$phase" "$PHASE_MODEL" "$PHASE_EFFORT" "$attempt" pass "$((t1 - t0))" "$(wc -c < "$prompt_file" | tr -d ' ')"
       say "phase $phase PASSED"
       return 0
     fi
+    t1="$(date +%s)"
+    metric "$phase" "$PHASE_MODEL" "$PHASE_EFFORT" "$attempt" fail "$((t1 - t0))" "$(wc -c < "$prompt_file" | tr -d ' ')"
 
     say "gate FAILED for $phase:"
     tail -n 25 "$gate_file"

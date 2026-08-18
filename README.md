@@ -90,6 +90,38 @@ Three files per attempt, kept for every attempt. When a phase fails twice, these
 are what tell you whether the prompt was wrong, the gate was wrong, or the model
 was.
 
+Every attempt also appends a row to `runs/<name>/.factory/metrics.tsv`:
+
+```
+started_at  phase  model  effort  attempt  result  seconds  prompt_bytes
+```
+
+## Measuring it
+
+One successful run says the pipeline *can* work. It does not say it works
+reliably, which is the only thing that matters for something meant to run with
+nobody watching.
+
+```
+./measure.sh specs/minicat.md --runs 3
+./measure.sh specs/minicat.md --name minicat --summary-only   # report, no new runs
+```
+
+Each run gets its own `runs/<base>-rN` directory — a resumed run skips phases
+that are already done and would report passes it did not earn. The summary gives
+attempts and passes per phase, how often a phase passed first try, average
+seconds, and where each run stopped.
+
+Read it as: attempts above passes means that phase needed a retry — fix its
+prompt, not `FACTORY_MAX_ATTEMPTS`. A run that stopped names the phase a human
+had to rescue; that count is the one to drive to zero. And a phase that sailed
+through while a later phase failed on its work is the first place to look for a
+false pass.
+
+It costs `runs x 6` phases of quota. `FACTORY_DRY_RUN=1` exercises the harness
+without calling a model — every gate then fails, which is exactly what proves
+the failure path records what it should.
+
 ## If a phase keeps failing
 
 Fix the phase prompt or tighten the gate. Do not raise `FACTORY_MAX_ATTEMPTS` —

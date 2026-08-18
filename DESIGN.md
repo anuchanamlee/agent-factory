@@ -178,6 +178,13 @@ FACTORY_DEPLOY_TARGET=vps FACTORY_VPS=root@1.2.3.4 \
 
 ปรับที่ **prompt เฟส** และ **ความเข้มของ gate** เท่านั้น อย่าปรับด้วยการเพิ่มจำนวน retry
 
+**ทำแล้ว**: ทุก attempt เขียนแถวลง `runs/<name>/.factory/metrics.tsv`
+(`started_at phase model effort attempt result seconds prompt_bytes`) และ `./measure.sh <spec> --runs 3`
+รันแยกไดเรกทอรีให้ทุกรอบ (รอบเก่าค้างอยู่ = ถูก resume แล้วรายงาน pass ที่ไม่ได้ทำจริง) แล้วสรุป
+attempts/passes/1st-try/avg-sec ต่อเฟส + เฟสที่แต่ละรอบหยุด. `--summary-only` อ่านของเก่าซ้ำโดยไม่รันใหม่
+
+ข้อ 3 (false pass) อัตโนมัติไม่ได้ ต้องใช้คนดู — แต่ตารางชี้ที่ให้ดูก่อนได้: เฟสที่ผ่านฉลุยแล้วเฟสถัดไปพังกับงานของมัน
+
 ---
 
 ## Sources
