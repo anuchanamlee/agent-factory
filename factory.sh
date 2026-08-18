@@ -10,29 +10,45 @@
 #   ./factory.sh specs/my-shop.md --name my-shop --from 30-features
 #   ./factory.sh specs/my-shop.md --name my-shop --only 50-deploy
 #
+# Model and effort are per phase, in pipeline/<phase>.conf. Planning and review
+# get the stronger model; mechanical phases do not. FACTORY_MODEL / FACTORY_EFFORT
+# override every phase at once — useful for a cheap dry run, not for normal use.
+#
 # Env knobs:
-#   FACTORY_MODEL=opus|sonnet        model per phase          (default: opus)
-#   FACTORY_EFFORT=low|medium|high|xhigh|max                  (default: high)
+#   FACTORY_MODEL=opus|sonnet        override model for ALL phases
+#   FACTORY_EFFORT=low|medium|high|xhigh|max   override effort for ALL phases
 #   FACTORY_MAX_ATTEMPTS=2           gate retries per phase   (default: 2)
-#   FACTORY_PERM=acceptEdits|bypassPermissions                (default: acceptEdits)
+#   FACTORY_PERM=auto|acceptEdits|bypassPermissions           (default: auto)
 #   FACTORY_DEPLOY_TARGET=local|vps  deploy phase target      (default: local)
 #   FACTORY_VPS=user@host            required when target=vps
+#   FACTORY_CONFIRM_PROD=yes         required to deploy to a real host
+#   FACTORY_DRY_RUN=1                build every prompt and run every gate, but
+#                                    make no model call - for iterating on the
+#                                    phase prompts without spending quota
+#   FACTORY_NOTES_LIMIT=6000         bytes of NOTES.md carried into a prompt
 
 set -euo pipefail
 
 FACTORY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MODEL="${FACTORY_MODEL:-opus}"
-EFFORT="${FACTORY_EFFORT:-high}"
+# Fallbacks for a phase with no .conf; env vars, if set, beat both.
+DEFAULT_MODEL=opus
+DEFAULT_EFFORT=high
+# NOTES.md is append-only across six phases and every retry. Cap what reaches the
+# prompt so a chatty early phase cannot tax every phase after it.
+NOTES_LIMIT="${FACTORY_NOTES_LIMIT:-6000}"
 MAX_ATTEMPTS="${FACTORY_MAX_ATTEMPTS:-2}"
-PERM="${FACTORY_PERM:-acceptEdits}"
+# auto runs the classifier that blocks dangerous commands, and aborts a headless
+# run outright if it keeps blocking. Failing loudly beats a wedged pipeline.
+PERM="${FACTORY_PERM:-auto}"
 DEPLOY_TARGET="${FACTORY_DEPLOY_TARGET:-local}"
 
 # phase-id : gate-script
 PHASES=(
+  "00-plan:plan"
   "10-scaffold:build"
   "20-data:data"
-  "30-features:build"
-  "40-verify:smoke"
+  "30-features:features"
+  "40-review:smoke"
   "50-deploy:deploy"
 )
 
@@ -65,19 +81,49 @@ SPEC_PATH="$(cd "$(dirname "$SPEC_ARG")" && pwd)/$(basename "$SPEC_ARG")"
 PROJECT_DIR="$FACTORY_DIR/runs/$NAME"
 META_DIR="$PROJECT_DIR/.factory"
 mkdir -p "$META_DIR/logs"
-cp "$SPEC_PATH" "$META_DIR/SPEC.md"
+# The spec template carries HTML comments that tell a human how to fill it in.
+# They are dead weight in a prompt that gets rebuilt for every phase and every
+# retry, so strip them once here rather than paying for them a dozen times.
+sed -E '/<!--/,/-->/d' "$SPEC_PATH" | sed -E '/^[[:space:]]*$/N;/^[[:space:]]*\n[[:space:]]*$/D' > "$META_DIR/SPEC.md"
+[ -s "$META_DIR/SPEC.md" ] || die "spec is empty once comments are stripped: $SPEC_ARG"
+say "spec    : $(wc -c < "$SPEC_PATH") bytes -> $(wc -c < "$META_DIR/SPEC.md") bytes after stripping comments"
 
 say "project : $NAME"
 say "dir     : $PROJECT_DIR"
-say "model   : $MODEL (effort $EFFORT)"
+say "phases  : ${#PHASES[@]} (model and effort per pipeline/<phase>.conf)"
 say "deploy  : $DEPLOY_TARGET"
 
 # ---------------------------------------------------------------- helpers
 phase_done() { [ -f "$META_DIR/done-$1" ]; }
 
+# Reads pipeline/<phase>.conf into PHASE_MODEL / PHASE_EFFORT. Planning and
+# review are worth the expensive model; scaffolding against a locked stack is
+# not, and on a subscription that difference is quota rather than money.
+load_phase_conf() {
+  local phase="$1"
+  local conf="$FACTORY_DIR/pipeline/$phase.conf"
+  local MODEL="" EFFORT=""
+
+  if [ -f "$conf" ]; then
+    # shellcheck disable=SC1090
+    . "$conf"
+  fi
+
+  PHASE_MODEL="${MODEL:-$DEFAULT_MODEL}"
+  PHASE_EFFORT="${EFFORT:-$DEFAULT_EFFORT}"
+
+  # An explicit env override beats the per-phase file.
+  [ -n "${FACTORY_MODEL:-}" ]  && PHASE_MODEL="$FACTORY_MODEL"
+  [ -n "${FACTORY_EFFORT:-}" ] && PHASE_EFFORT="$FACTORY_EFFORT"
+  return 0
+}
+
 build_prompt() {
   # $1 = phase id, $2 = path to previous gate failure output (may be empty)
   local phase="$1" failure="$2"
+  # Everything stable comes first and everything that changes between attempts
+  # comes last, so a retry re-reads the identical prefix from cache instead of
+  # paying for the spec and the instructions a second time.
   {
     echo "You are building a project autonomously. No human will answer questions."
     echo "Work only inside the current directory. Finish the phase completely."
@@ -88,15 +134,32 @@ build_prompt() {
     cat "$META_DIR/SPEC.md"
     echo "</spec>"
     echo
-    if [ -f "$META_DIR/NOTES.md" ]; then
-      echo "<notes-from-earlier-phases>"
-      cat "$META_DIR/NOTES.md"
-      echo "</notes-from-earlier-phases>"
-      echo
-    fi
     echo "<phase-instructions>"
     cat "$FACTORY_DIR/pipeline/$phase.md"
     echo "</phase-instructions>"
+    if [ -f "$PROJECT_DIR/PLAN.md" ]; then
+      echo
+      echo "<ground-truth>"
+      echo "PLAN.md, TASKS.md and CLAUDE.md are in the working directory. The"
+      echo "planning phase wrote them and this phase builds against them. Read them"
+      echo "before you touch anything. Where they disagree with what you would have"
+      echo "chosen, follow them and record the disagreement in .factory/NOTES.md -"
+      echo "later phases read the files, not your reasoning."
+      echo "</ground-truth>"
+    fi
+    echo
+    echo "When the phase is complete, append a short section to .factory/NOTES.md"
+    echo "recording decisions later phases need (file layout, table names, env vars,"
+    echo "ports, gotchas). Keep it under 40 lines. Notes are truncated to the most"
+    echo "recent ${NOTES_LIMIT} bytes before the next phase sees them, so put the"
+    echo "durable decisions in PLAN.md and CLAUDE.md, not here."
+    # --- volatile from here down ---
+    if [ -f "$META_DIR/NOTES.md" ]; then
+      echo
+      echo "<notes-from-earlier-phases>"
+      tail -c "$NOTES_LIMIT" "$META_DIR/NOTES.md"
+      echo "</notes-from-earlier-phases>"
+    fi
     if [ -n "$failure" ] && [ -s "$failure" ]; then
       echo
       echo "<previous-attempt-failed>"
@@ -106,10 +169,6 @@ build_prompt() {
       tail -c 8000 "$failure"
       echo "</previous-attempt-failed>"
     fi
-    echo
-    echo "When the phase is complete, append a short section to .factory/NOTES.md"
-    echo "recording decisions later phases need (file layout, table names, env vars,"
-    echo "ports, gotchas). Keep it under 40 lines total per phase."
   }
 }
 
@@ -117,17 +176,23 @@ run_phase() {
   local phase="$1" gate="$2"
   local attempt=1 failure=""
 
+  load_phase_conf "$phase"
+
   while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
-    say "phase $phase — attempt $attempt/$MAX_ATTEMPTS"
+    say "phase $phase — attempt $attempt/$MAX_ATTEMPTS ($PHASE_MODEL, effort $PHASE_EFFORT)"
     local prompt_file="$META_DIR/logs/$phase-a$attempt.prompt.md"
     local out_file="$META_DIR/logs/$phase-a$attempt.out.txt"
     local gate_file="$META_DIR/logs/$phase-a$attempt.gate.txt"
 
     build_prompt "$phase" "$failure" > "$prompt_file"
 
-    if ! ( cd "$PROJECT_DIR" && claude -p "$(cat "$prompt_file")" \
-             --model "$MODEL" \
-             --effort "$EFFORT" \
+    if [ -n "${FACTORY_DRY_RUN:-}" ]; then
+      say "dry run: would call claude --model $PHASE_MODEL --effort $PHASE_EFFORT"
+      say "         prompt is $(wc -c < "$prompt_file") bytes at $prompt_file"
+      echo "(dry run - no model call)" > "$out_file"
+    elif ! ( cd "$PROJECT_DIR" && claude -p "$(cat "$prompt_file")" \
+             --model "$PHASE_MODEL" \
+             --effort "$PHASE_EFFORT" \
              --permission-mode "$PERM" \
              --allowedTools $ALLOWED_TOOLS \
              --output-format text ) 2>&1 | tee "$out_file"; then
@@ -154,6 +219,13 @@ Fix by hand, then resume with:  ./factory.sh $SPEC_ARG --name $NAME --from $phas
 }
 
 # ---------------------------------------------------------------- run
+for entry in "${PHASES[@]}"; do
+  phase="${entry%%:*}"
+  gate="${entry##*:}"
+  [ -f "$FACTORY_DIR/pipeline/$phase.md" ] || die "pipeline/$phase.md is missing - every phase needs its prompt"
+  [ -f "$FACTORY_DIR/gates/$gate.sh" ]     || die "gates/$gate.sh is missing - phase $phase has no gate to pass"
+done
+
 started=0
 for entry in "${PHASES[@]}"; do
   phase="${entry%%:*}"
