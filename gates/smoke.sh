@@ -47,8 +47,12 @@ done < <(find "$APP_DIR" -type f \( -name 'page.tsx' -o -name 'page.ts' -o -name
 [ "$missing" -eq 0 ] || fail "$missing page(s) on disk are not declared in $ROUTES"
 
 # ---------------------------------------------------------------- 2. fresh data
-TMP="$PROJ/.factory-tmp-smoke"
-rm -rf "$TMP"; mkdir -p "$TMP"
+# One directory per attempt. Windows does not release a SQLite handle the
+# instant the process holding it dies, so a leftover lock from the previous
+# attempt must never be able to block this one.
+TMP="$PROJ/.factory-tmp-smoke-$$"
+rm -rf "$PROJ"/.factory-tmp-smoke-* 2>/dev/null || true
+mkdir -p "$TMP"
 export DATA_DIR="$TMP"
 export DATABASE_PATH="$TMP/app.db"
 export NODE_ENV=production
@@ -70,10 +74,28 @@ PORT="${FACTORY_SMOKE_PORT:-3987}"
 LOG="$TMP/server.log"
 SERVER_PID=""
 
+# Nothing in here may change the exit status. A failed cleanup turning a
+# passing gate into a failing one costs a whole retry of the phase, and the
+# phase is not what went wrong.
 cleanup() {
-  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
-  [ -n "$SERVER_PID" ] && wait "$SERVER_PID" 2>/dev/null || true
-  rm -rf "$TMP"
+  local rc=$?
+  if [ -n "$SERVER_PID" ]; then
+    # npm spawns `next start` as a child. Killing npm alone leaves that child
+    # alive holding the SQLite handle, which is what makes the rm below fail on
+    # Windows. taskkill /T takes the tree; the plain kill is the fallback.
+    if command -v taskkill >/dev/null 2>&1; then
+      taskkill //PID "$SERVER_PID" //T //F >/dev/null 2>&1 || true
+    fi
+    kill "$SERVER_PID" 2>/dev/null || true
+    pkill -P "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+  for _ in 1 2 3 4 5; do
+    rm -rf "$TMP" 2>/dev/null && break
+    sleep 1
+  done
+  rm -rf "$TMP" 2>/dev/null || true
+  return "$rc"
 }
 trap cleanup EXIT
 

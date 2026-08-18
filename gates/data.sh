@@ -12,7 +12,7 @@ ls migrations/*.sql >/dev/null 2>&1 || { echo "FAIL: no .sql files in migrations
 grep -q '"migrate"' package.json || { echo "FAIL: package.json has no 'migrate' script"; exit 1; }
 
 echo "-- running migrations against a throwaway database"
-rm -rf .factory-tmp-data
+rm -rf .factory-tmp-data 2>/dev/null || true
 mkdir -p .factory-tmp-data
 DATA_DIR="$PROJ/.factory-tmp-data" DATABASE_PATH="$PROJ/.factory-tmp-data/app.db" npm run migrate
 
@@ -33,7 +33,7 @@ console.log("user_version:", v);
 if (!v) { console.error("FAIL: PRAGMA user_version was never bumped by the migration runner"); process.exit(1); }
 ' "$DB"
 
-rm -rf .factory-tmp-data
+rm -rf .factory-tmp-data 2>/dev/null || true
 
 echo "-- build must still pass with the data layer wired in"
 bash "$(dirname "${BASH_SOURCE[0]}")/build.sh" "$PROJ"
