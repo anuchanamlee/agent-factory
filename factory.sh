@@ -27,6 +27,10 @@
 #                                    phase prompts without spending quota
 #   FACTORY_NOTES_LIMIT=6000         bytes of NOTES.md carried into a prompt
 #
+# Exit codes: 0 every phase passed  ·  1 a phase failed its gate after every
+# attempt  ·  3 the subscription ran out of quota mid-run, so nothing from that
+# phase onward was measured.
+#
 # Every attempt appends a row to runs/<name>/.factory/metrics.tsv (phase, model,
 # effort, attempt, pass/fail, seconds, prompt bytes). ./measure.sh runs a spec
 # several times and summarises those rows - which phase needs a retry, which one
@@ -70,6 +74,30 @@ metric() {
   [ -s "$META_DIR/metrics.tsv" ] || \
     printf 'started_at\tphase\tmodel\teffort\tattempt\tresult\tseconds\tprompt_bytes\n' > "$META_DIR/metrics.tsv"
   { printf '%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; printf '\t%s' "$@"; printf '\n'; } >> "$META_DIR/metrics.tsv"
+}
+
+# A subscription that has run out says so and exits non-zero. That is not a phase
+# failure: the model never ran, so a retry burns the attempt budget and the gate
+# that follows grades the PREVIOUS phase's work - which is how a run once
+# recorded 20-data as passed while the model was doing nothing at all.
+# Exit 3 means "nothing was measured"; measure.sh stops the remaining runs on it.
+# A phase whose model call changed no file did not do its work. The gate that
+# follows would then grade whatever the previous phase left behind - that is how
+# a run recorded 20-data as PASSED while the model was doing nothing at all.
+# Cheap enough to run twice per attempt: paths plus size plus mtime, with the
+# directories nobody edits by hand left out.
+tree_fingerprint() {
+  ( cd "$1" 2>/dev/null && find . \
+      -name node_modules -prune -o -name .git -prune -o \
+      -name .next -prune -o -name .factory -prune -o \
+      -type f -printf "%p %s %T@\n" 2>/dev/null \
+    | LC_ALL=C sort | cksum ) || echo "unreadable"
+}
+
+QUOTA_EXIT=3
+quota_stopped() {
+  tail -c 4000 "$1" | grep -qiE \
+    'monthly spend limit|usage limit reached|hit your (usage|spend) limit|credit balance is too low|insufficient credits?'
 }
 
 # ---------------------------------------------------------------- args
@@ -117,13 +145,15 @@ phase_done() { [ -f "$META_DIR/done-$1" ]; }
 load_phase_conf() {
   local phase="$1"
   local conf="$FACTORY_DIR/pipeline/$phase.conf"
-  local MODEL="" EFFORT=""
+  local MODEL="" EFFORT="" ALLOW_NO_CHANGE=""
 
   if [ -f "$conf" ]; then
     # shellcheck disable=SC1090
     . "$conf"
   fi
 
+  # 40-review is allowed to conclude that nothing needs fixing.
+  PHASE_ALLOW_NO_CHANGE="${ALLOW_NO_CHANGE:-0}"
   PHASE_MODEL="${MODEL:-$DEFAULT_MODEL}"
   PHASE_EFFORT="${EFFORT:-$DEFAULT_EFFORT}"
 
@@ -203,17 +233,48 @@ run_phase() {
 
     build_prompt "$phase" "$failure" > "$prompt_file"
 
+    local fp_before fp_after
+    fp_before="$(tree_fingerprint "$PROJECT_DIR")"
+
     if [ -n "${FACTORY_DRY_RUN:-}" ]; then
       say "dry run: would call claude --model $PHASE_MODEL --effort $PHASE_EFFORT"
       say "         prompt is $(wc -c < "$prompt_file") bytes at $prompt_file"
       echo "(dry run - no model call)" > "$out_file"
-    elif ! ( cd "$PROJECT_DIR" && claude -p "$(cat "$prompt_file")" \
-             --model "$PHASE_MODEL" \
-             --effort "$PHASE_EFFORT" \
-             --permission-mode "$PERM" \
-             --allowedTools $ALLOWED_TOOLS \
-             --output-format text ) 2>&1 | tee "$out_file"; then
-      say "claude exited non-zero on $phase (see $out_file)"
+    else
+      local claude_rc=0
+      ( cd "$PROJECT_DIR" && claude -p "$(cat "$prompt_file")" \
+        --model "$PHASE_MODEL" \
+        --effort "$PHASE_EFFORT" \
+        --permission-mode "$PERM" \
+        --allowedTools $ALLOWED_TOOLS \
+        --output-format text ) 2>&1 | tee "$out_file" || claude_rc=$?
+      if [ "$claude_rc" -ne 0 ]; then
+        say "claude exited non-zero on $phase (see $out_file)"
+        # Only a non-zero exit counts as running dry: the same words inside a
+        # normal answer are the model talking about limits, not the CLI refusing.
+        if quota_stopped "$out_file"; then
+          t1="$(date +%s)"
+          metric "$phase" "$PHASE_MODEL" "$PHASE_EFFORT" "$attempt" quota "$((t1 - t0))" "$(wc -c < "$prompt_file" | tr -d ' ')"
+          say "out of model quota during $phase - stopping before the gate."
+          say "The model did nothing this attempt, so a gate result here would grade"
+          say "the previous phase's work. Nothing from $phase onward was measured."
+          say "resume once quota is back:  ./factory.sh $SPEC_ARG --name $NAME --from $phase"
+          exit "$QUOTA_EXIT"
+        fi
+      fi
+      fi
+
+    fp_after="$(tree_fingerprint "$PROJECT_DIR")"
+    if [ -z "${FACTORY_DRY_RUN:-}" ] && [ "$PHASE_ALLOW_NO_CHANGE" != "1" ] \
+       && [ "$fp_before" = "$fp_after" ]; then
+      t1="$(date +%s)"
+      metric "$phase" "$PHASE_MODEL" "$PHASE_EFFORT" "$attempt" nochange "$((t1 - t0))" "$(wc -c < "$prompt_file" | tr -d ' ')"
+      say "no file changed during $phase - skipping the gate, which would grade the previous phase."
+      printf "the model wrote nothing this attempt. gate not run.\n" > "$gate_file"
+      tail -n 20 "$out_file" >> "$gate_file" 2>/dev/null || true
+      failure="$gate_file"
+      attempt=$((attempt + 1))
+      continue
     fi
 
     say "gate: $gate"

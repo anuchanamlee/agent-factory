@@ -56,6 +56,7 @@ case "$RUNS" in ''|*[!0-9]*) die "--runs takes a number" ;; esac
 [ -n "$BASE" ] || BASE="$(basename "${SPEC%.*}")-measure"
 
 REPORT="$FACTORY_DIR/runs/$BASE-report.txt"
+ABORTED=0
 mkdir -p "$FACTORY_DIR/runs"
 
 PHASES="00-plan 10-scaffold 20-data 30-features 40-review 50-deploy"
@@ -78,11 +79,17 @@ for i in $(seq 1 "$RUNS"); do
 
   say "run $i/$RUNS -> $NAME"
   start="$(date +%s)"
-  if ( cd "$FACTORY_DIR" && ./factory.sh "$SPEC" --name "$NAME" ) 2>&1 | tee "$FACTORY_DIR/runs/$NAME.log"; then
-    verdict=complete
-  else
-    verdict=stopped
-  fi
+  # PIPESTATUS, not the pipeline status: tee always succeeds and would hide the
+  # exit code that says whether this run measured anything at all.
+  set +e
+  ( cd "$FACTORY_DIR" && ./factory.sh "$SPEC" --name "$NAME" ) 2>&1 | tee "$FACTORY_DIR/runs/$NAME.log"
+  rc=${PIPESTATUS[0]}
+  set -e
+  case "$rc" in
+    0) verdict=complete ;;
+    3) verdict=quota ;;
+    *) verdict=stopped ;;
+  esac
   finish="$(date +%s)"
 
   # Where it stopped, if it did: the first phase with no done- marker.
@@ -90,20 +97,32 @@ for i in $(seq 1 "$RUNS"); do
   for p in $PHASES; do
     if [ ! -f "$DIR/.factory/done-$p" ]; then stopped_at="$p"; break; fi
   done
-  [ -n "$stopped_at" ] || verdict=complete
+  [ -n "$stopped_at" ] || [ "$verdict" = quota ] || verdict=complete
 
   printf '%s\t%s\t%s\t%s\n' "$NAME" "$verdict" "${stopped_at:--}" "$((finish - start))" >> "$REPORT"
   say "run $i: $verdict${stopped_at:+ at $stopped_at} in $((finish - start))s"
+
+  # Every later run hits the same wall and writes the same meaningless row.
+  # Three rows reading "stopped at 00-plan" look like a broken pipeline when all
+  # they mean is that the account ran dry.
+  if [ "$verdict" = quota ]; then
+    ABORTED=1
+    say "out of quota - abandoning runs $((i + 1))..$RUNS. This measurement is incomplete."
+    break
+  fi
 done
 fi
 
 # ---------------------------------------------------------------- summary
-say "summary over $RUNS run(s) of $SPEC"
+say "summary over $(wc -l < "$REPORT" | tr -d ' ') of $RUNS requested run(s) of $SPEC"
 
 cat "$FACTORY_DIR"/runs/"$BASE"-r*/.factory/metrics.tsv 2>/dev/null \
   | awk -F'\t' '
       $1 == "started_at" { next }
       NF < 7 { next }
+      # A quota row means the model never ran. Counting it as an attempt would
+      # drag the pass rate down for a phase that was never given a chance.
+      $6 == "quota" { quota[$2]++; quota_total++; next }
       {
         phase = $2; attempt = $5 + 0; result = $6; secs = $7 + 0
         seen[phase] = 1
@@ -129,6 +148,16 @@ echo "runs:"
 awk -F'\t' '{ printf "  %-24s %-9s stopped-at=%-12s %ss\n", $1, $2, $3, $4 }' "$REPORT"
 
 echo
+if [ "$ABORTED" -eq 1 ]; then
+  echo
+  echo "INCOMPLETE: the account ran out of quota part-way through. The numbers above"
+  echo "cover only the attempts that actually reached a model. Re-run the whole"
+  echo "measurement once quota is back - do not read a pass rate off a partial run."
+  echo
+fi
 echo "A phase whose attempts exceed its passes needed a retry."
 echo "A run that stopped names the phase a human has to rescue - the number to drive to zero."
 echo "Logs: runs/$BASE-r<N>/.factory/logs/  ·  per-attempt rows: runs/$BASE-r<N>/.factory/metrics.tsv"
+
+
+[ "$ABORTED" -eq 0 ] || exit 3
