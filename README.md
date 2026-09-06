@@ -96,6 +96,21 @@ Every attempt also appends a row to `runs/<name>/.factory/metrics.tsv`:
 started_at  phase  model  effort  attempt  result  seconds  prompt_bytes
 ```
 
+## Testing the harness
+
+```
+./test/harness-test.sh
+```
+
+Seconds, no quota. `test/stub-claude.sh` stands in for the CLI and imitates a
+model that answers while writing nothing, one whose account is empty, and one
+that writes the wrong file. The test then reads `metrics.tsv` — the row is what
+a measurement is later computed from, so a wrong row is a wrong pass rate.
+
+`FACTORY_DRY_RUN=1` does not cover this ground: it skips the no-op check on
+purpose and never reaches the code that reads the model's exit status. Those are
+exactly the two paths that let a ruined run be reported as a result.
+
 ## Measuring it
 
 One successful run says the pipeline *can* work. It does not say it works
