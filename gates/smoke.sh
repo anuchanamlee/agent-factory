@@ -99,6 +99,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# A start script that pins its own port ignores the one this gate picked, and
+# the only symptom is a 60 second wait followed by a phase failing for a reason
+# that has nothing to do with its work. Say so in one line instead.
+if grep -qE '"start"[[:space:]]*:[[:space:]]*"[^"]*-p[[:space:]]' package.json; then
+  fail "package.json start script hardcodes a port. It must be plain \`next start\` so PORT is honoured."
+fi
+
 echo "-- starting server on :$PORT"
 PORT="$PORT" npm start > "$LOG" 2>&1 &
 SERVER_PID=$!

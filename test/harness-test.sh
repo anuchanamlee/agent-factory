@@ -44,6 +44,18 @@ expect_exit() {
   if [ "$1" = "$2" ]; then pass "$3"; else fail "$3 (exit $1, expected $2)"; fi
 }
 
+# Any node process whose command line names a directory - what a leaked server
+# looks like from outside.
+node_processes_under() {
+  local d="$1"
+  PS_DIR="$d" powershell.exe -NoProfile -NonInteractive -Command '
+    $d = $env:PS_DIR.Replace("/", "\\").TrimEnd("\\")
+    Get-CimInstance Win32_Process |
+      Where-Object { $_.Name -eq "node.exe" -and $_.CommandLine -and $_.CommandLine.Replace("/", "\\").Contains($d) } |
+      ForEach-Object { $_.ProcessId }
+  ' 2>/dev/null | tr -d '\r' | head -1
+}
+
 run_phase() {
   local name="$1" mode="$2"
   rm -rf "${FACTORY_DIR:?}/runs/$name"
@@ -75,6 +87,31 @@ expect_results harness-write "the tree changed, so the gate ran and failed twice
 expect_exit "$rc" 1 "a failed gate still ends the run"
 
 echo
+echo "a model stopped by the session cap, not the monthly one"
+run_phase harness-session session; rc=$?
+expect_results harness-session "the session cap is recognised as quota, not as a phase failure" "quota"
+expect_exit "$rc" 3 "the measurement stops instead of reporting a rate off a run that never happened"
+
+echo
+echo "a model that leaves a server running"
+run_phase harness-leak leak; rc=$?
+leftover="$(node_processes_under "$FACTORY_DIR/runs/harness-leak")"
+if [ -z "$leftover" ]; then
+  pass "the leaked process was reaped before the next phase could inherit it"
+else
+  fail "a node process survived the phase (pid $leftover) - it will hold files open later"
+  powershell.exe -NoProfile -NonInteractive -Command "taskkill /PID $leftover /T /F" >/dev/null 2>&1 || true
+fi
+
+echo
+echo "a start script that pins its own port"
+if grep -qE 'hardcodes a port' "$FACTORY_DIR/gates/smoke.sh"; then
+  pass "the smoke gate refuses it by name instead of waiting 60s for the wrong port"
+else
+  fail "the smoke gate no longer checks the start script"
+fi
+
+echo
 echo "measure.sh meeting an exhausted account mid-measurement"
 rm -rf "${FACTORY_DIR:?}"/runs/harness-measure-r* "${FACTORY_DIR:?}/runs/harness-measure-report.txt"
 ( cd "$FACTORY_DIR" && PATH="$STUB_DIR:$PATH" STUB_MODE=quota \
@@ -93,6 +130,7 @@ else
 fi
 
 rm -rf "${FACTORY_DIR:?}"/runs/harness-noop "${FACTORY_DIR:?}"/runs/harness-quota \
+       "${FACTORY_DIR:?}"/runs/harness-session "${FACTORY_DIR:?}"/runs/harness-leak \
        "${FACTORY_DIR:?}"/runs/harness-write "${FACTORY_DIR:?}"/runs/harness-measure-r* \
        "${FACTORY_DIR:?}/runs/harness-measure-report.txt"
 

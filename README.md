@@ -103,7 +103,8 @@ started_at  phase  model  effort  attempt  result  seconds  prompt_bytes
 ```
 
 Seconds, no quota. `test/stub-claude.sh` stands in for the CLI and imitates a
-model that answers while writing nothing, one whose account is empty, and one
+model that answers while writing nothing, one whose account is empty, one
+stopped by the session cap, one that leaves a server running behind it, and one
 that writes the wrong file. The test then reads `metrics.tsv` — the row is what
 a measurement is later computed from, so a wrong row is a wrong pass rate.
 

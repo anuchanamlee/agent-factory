@@ -94,10 +94,58 @@ tree_fingerprint() {
     | LC_ALL=C sort | cksum ) || echo "unreadable"
 }
 
+# A phase that leaves a server running poisons every phase after it. The model
+# is told to clean up after itself and mostly does, but "mostly" is not a
+# property a run measured overnight can rely on: on 7 Sep a server started
+# during 10-scaffold was still alive during 40-review, holding .next\standalone
+# open, and next build died with EBUSY twice in a row. The report then said the
+# review phase had failed. It had not - nothing was ever wrong with the model's
+# work, and the number was noise.
+#
+# So the orchestrator reaps between attempts instead of trusting the prompt.
+# Only processes whose command line names this project directory are killed,
+# which leaves the operator's own editors and shells alone.
+#
+# Two guards, because a reaper that kills the wrong thing is worse than the leak
+# it fixes:
+#   - only node.exe and the cmd.exe that npm wraps it in. The orchestrator's own
+#     bash, and the claude CLI whose command line carries the prompt (and with it
+#     the project path), can never match.
+#   - only command lines naming this project directory, so a server belonging to
+#     another project on the same machine is left alone.
+#
+# Known limit: a process launched with a relative path from inside the project
+# has a command line that never mentions the directory, so it survives. Windows
+# does not expose a process's working directory here. The leak that actually
+# happened - npm running next from node_modules - carries the absolute path.
+reap_project_processes() {
+  local dir="$1" win_dir
+  command -v powershell.exe >/dev/null 2>&1 || return 0
+  # PowerShell matches on the Windows form of the path, not the MSYS one.
+  win_dir="$(cd "$dir" && pwd -W 2>/dev/null || echo "$dir")"
+  PS_DIR="$win_dir" powershell.exe -NoProfile -NonInteractive -Command '
+    # Both sides are normalised to one separator: a command line may carry
+    # either, and a path that misses by a slash reaps nothing at all.
+    $d = $env:PS_DIR.Replace("/", "\").TrimEnd("\")
+    Get-CimInstance Win32_Process |
+      Where-Object {
+        $_.Name -in @("node.exe", "cmd.exe") -and
+        $_.CommandLine -and $_.CommandLine.Replace("/", "\").Contains($d)
+      } |
+      ForEach-Object { taskkill /PID $_.ProcessId /T /F 2>&1 | Out-Null }
+  ' >/dev/null 2>&1 || true
+}
+
 QUOTA_EXIT=3
+# Every way the CLI says "I am not going to answer, and trying again now will not
+# help". The session cap is a different sentence from the monthly one and cost a
+# whole measurement on 7 Sep: unmatched, it fell through to the no-change check,
+# and the report named the plan phase as the thing that had failed, which it had
+# not. Widen this list rather than trimming it - a missed phrase is a run that
+# never happened being reported as a result.
 quota_stopped() {
   tail -c 4000 "$1" | grep -qiE \
-    'monthly spend limit|usage limit reached|hit your (usage|spend) limit|credit balance is too low|insufficient credits?'
+    'monthly spend limit|usage limit reached|hit your (usage|spend|session) limit|session limit reached|limit .{0,20}resets? (at|in)|credit balance is too low|insufficient credits?|rate limit exceeded'
 }
 
 # ---------------------------------------------------------------- args
@@ -263,6 +311,11 @@ run_phase() {
         fi
       fi
       fi
+
+    # Before anything reads the tree: whatever the model left running still has
+    # file handles open, and on Windows an open handle is a build failure two
+    # phases later rather than an error here.
+    reap_project_processes "$PROJECT_DIR"
 
     fp_after="$(tree_fingerprint "$PROJECT_DIR")"
     if [ -z "${FACTORY_DRY_RUN:-}" ] && [ "$PHASE_ALLOW_NO_CHANGE" != "1" ] \

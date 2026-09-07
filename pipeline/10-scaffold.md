@@ -10,6 +10,11 @@ Stand up an empty but complete project that builds. No features yet.
 - `package.json` scripts: `dev`, `build`, `start`, plus placeholders for
   `migrate` and `seed` that phase 20 will fill in (they may exit 0 doing nothing
   for now, but the keys must exist).
+  **`start` must be plain `next start` with no `-p` flag.** Next reads `PORT`
+  from the environment, and the smoke gate starts the app on a port of its own
+  choosing so it does not collide with anything already running. A hardcoded
+  `-p 3000` there makes the gate wait 60 seconds for a server that is listening
+  somewhere else, and then fail a phase that was fine.
 - `proxy.ts` at the **repository root** — not under `src/` — even if it only
   passes everything through for now. Turbopack dev does not run it from `src/`,
   which means protected routes silently stop being protected.
