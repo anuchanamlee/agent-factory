@@ -96,6 +96,24 @@ Every attempt also appends a row to `runs/<name>/.factory/metrics.tsv`:
 started_at  phase  model  effort  attempt  result  seconds  prompt_bytes
 ```
 
+## Writing a spec
+
+```
+./tools/spec-lint.sh specs/my-shop.md
+```
+
+Reads the file, calls no model, costs nothing. It says whether the mandatory
+sections carry content, whether any part of the template was left unfilled, and
+whether section 5 is written as steps a person can actually walk - phase 40
+curls that list. What it cannot say is whether the content is any good.
+
+The pipeline already refuses a bad spec, but it refuses it in phase 00, after a
+model call. This answers from the file what the file can answer.
+
+`/spec` (`.claude/skills/spec/`) interviews you and writes the file, pushing
+back on the two things that cost the most later: an acceptance list nothing can
+check, and an empty "what not to build".
+
 ## Testing the harness
 
 ```
