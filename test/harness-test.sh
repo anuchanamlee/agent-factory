@@ -44,16 +44,18 @@ expect_exit() {
   if [ "$1" = "$2" ]; then pass "$3"; else fail "$3 (exit $1, expected $2)"; fi
 }
 
-# Any node process whose command line names a directory - what a leaked server
-# looks like from outside.
-node_processes_under() {
-  local d="$1"
-  PS_DIR="$d" powershell.exe -NoProfile -NonInteractive -Command '
-    $d = $env:PS_DIR.Replace("/", "\\").TrimEnd("\\")
+# Every node process alive, by pid. Compared before and after a phase, because
+# matching on the command line has the same blind spot the reaper had: a server
+# started as `node server.js` names no directory at all, and that is exactly the
+# leak that survived three phases on 7 Sep. A test that cannot see it would pass
+# while the thing it checks is broken.
+all_node_pids() {
+  powershell.exe -NoProfile -NonInteractive -Command '
     Get-CimInstance Win32_Process |
-      Where-Object { $_.Name -eq "node.exe" -and $_.CommandLine -and $_.CommandLine.Replace("/", "\\").Contains($d) } |
+      Where-Object { $_.Name -eq "node.exe" } |
       ForEach-Object { $_.ProcessId }
-  ' 2>/dev/null | tr -d '\r' | head -1
+  ' 2>/dev/null | tr -d '' | grep -E '^[0-9]+$' | sort
+
 }
 
 run_phase() {
@@ -94,8 +96,10 @@ expect_exit "$rc" 3 "the measurement stops instead of reporting a rate off a run
 
 echo
 echo "a model that leaves a server running"
+nodes_pre="$(all_node_pids)"
 run_phase harness-leak leak; rc=$?
-leftover="$(node_processes_under "$FACTORY_DIR/runs/harness-leak")"
+leftover="$(comm -13 <(printf '%s
+' "$nodes_pre") <(all_node_pids) | head -1)"
 if [ -z "$leftover" ]; then
   pass "the leaked process was reaped before the next phase could inherit it"
 else
@@ -110,6 +114,36 @@ if grep -qE 'hardcodes a port' "$FACTORY_DIR/gates/smoke.sh"; then
 else
   fail "the smoke gate no longer checks the start script"
 fi
+
+echo
+echo "a run directory that cannot be cleared"
+# The reaper handles a node process holding a file. This is the other case: a
+# holder it must not touch. Silence here means measuring on top of a previous
+# run and reporting its passes as this one's.
+holddir="$FACTORY_DIR/runs/harness-hold-r1"
+rm -rf "$holddir" 2>/dev/null; mkdir -p "$holddir"
+cat > "$STUB_DIR/hold.ps1" <<'PS'
+$f = [System.IO.File]::Open($args[0], 'Create', 'Write', 'None')
+Start-Sleep -Seconds 60
+$f.Close()
+PS
+powershell.exe -NoProfile -File "$STUB_DIR/hold.ps1" \
+  "$(cd "$holddir" && pwd -W)/locked.bin" >/dev/null 2>&1 &
+sleep 3
+( cd "$FACTORY_DIR" && FACTORY_DRY_RUN=1 PATH="$STUB_DIR:$PATH" \
+  ./measure.sh "$SPEC" --runs 1 --name harness-hold ) > "$STUB_DIR/hold.log" 2>&1
+rc=$?
+expect_exit "$rc" 1 "measure.sh stops instead of measuring on top of the old run"
+if grep -q "cannot clear" "$STUB_DIR/hold.log"; then
+  pass "it names the directory it could not clear"
+else
+  fail "it failed without saying a leftover directory was the reason"
+fi
+powershell.exe -NoProfile -NonInteractive -Command "
+  Get-CimInstance Win32_Process |
+    Where-Object { \$_.CommandLine -like '*hold.ps1*' } |
+    ForEach-Object { taskkill /PID \$_.ProcessId /T /F 2>&1 | Out-Null }" >/dev/null 2>&1 || true
+sleep 1; rm -rf "$holddir" "$FACTORY_DIR/runs/harness-hold-report.txt" 2>/dev/null || true
 
 echo
 echo "measure.sh meeting an exhausted account mid-measurement"

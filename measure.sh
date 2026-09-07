@@ -24,6 +24,10 @@ set -euo pipefail
 
 FACTORY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# The reaper lives in factory.sh; pull in just that function rather than keeping
+# a second copy that can drift from it.
+eval "$(sed -n '/^node_snapshot()/,/^}/p;/^reap_project_processes()/,/^}/p' "$FACTORY_DIR/factory.sh")"
+
 die() { printf '
 [measure] ERROR: %s
 ' "$*" >&2; exit 1; }
@@ -74,7 +78,17 @@ for i in $(seq 1 "$RUNS"); do
   if [ -d "$DIR" ]; then
     [ "$KEEP" -eq 0 ] || die "$DIR already exists and --keep was given; move it aside first"
     say "clearing previous $NAME"
-    rm -rf "$DIR"
+    # A directory that will not go away is almost always a process still holding
+    # a file in it - the leak this harness already knows about. Reap, retry, and
+    # if it is still there, stop: measuring on top of a half-deleted run reports
+    # passes from the run before it.
+    rm -rf "$DIR" 2>/dev/null || true
+    if [ -d "$DIR" ]; then
+      reap_project_processes "$DIR"
+      sleep 2
+      rm -rf "$DIR" 2>/dev/null || true
+    fi
+    [ -d "$DIR" ] && die "cannot clear $DIR - something is still holding a file open in it. Close it, then run again."
   fi
 
   say "run $i/$RUNS -> $NAME"

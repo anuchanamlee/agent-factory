@@ -48,6 +48,11 @@ case "${STUB_MODE:-noop}" in
     printf 'setInterval(function(){}, 1e9);
 ' > leaked-server.js
     node "$PWD/leaked-server.js" >/dev/null 2>&1 &
+    # And the shape that has no path at all - `node server.js` from inside the
+    # project, which is how a Next standalone build is started. Nothing in the
+    # command line names the directory, so only "this did not exist before the
+    # phase" can catch it. That one held .next open across three phases on 7 Sep.
+    node leaked-server.js >/dev/null 2>&1 &
     echo "Started the dev server so you can look at it."
     exit 0
     ;;
