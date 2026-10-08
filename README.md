@@ -23,8 +23,9 @@ Why it is built this way, with sources: [`DESIGN.md`](DESIGN.md).
 
 ## Requirements
 
-- Windows with Git Bash. `powershell.exe` is used to find and stop leaked node processes; on Linux/macOS that
-  step silently does nothing (`factory.sh`, `node_snapshot` / `reap_project_processes`)
+- Bash. Windows + Git Bash is the platform it was built and tested on: `powershell.exe` is used to find and stop
+  leaked node processes, and on Linux/macOS that step silently does nothing (`factory.sh`, `node_snapshot` /
+  `reap_project_processes`); two harness checks also need PowerShell
 - Node 24 (`better-sqlite3` v12 ships prebuilt binaries for it)
 - Docker with a running daemon — only the deploy phase needs it
 - `claude` on your PATH, logged in
@@ -82,7 +83,7 @@ step.
 Read this before running anything here on a machine you use for other work.
 
 - **The process reaper is machine-wide.** After every phase, `reap_project_processes` force-kills
-  (`taskkill /T /F`) node processes whose command line names the project directory **and every `node.exe` that
+  (`taskkill /T /F`) `node.exe` and `cmd.exe` processes whose command line names the project directory **and every `node.exe` that
   started after the phase began** - whoever started it. That is how it catches a `node server.js` left behind by
   the model, but it will also kill an unrelated node app, bot or tool that happened to start during the phase.
   `test/harness-test.sh` triggers the same reaper. Run both on a machine (or VM) with nothing else starting node
