@@ -163,6 +163,33 @@ else
   fail "measure.sh kept going after the account was empty"
 fi
 
+echo
+echo "a run name that points outside runs/"
+# measure.sh deletes runs/<name>-rN before each run, so a name like ../x would
+# delete a directory the user never meant to give it. Both entry points must
+# refuse it before touching the disk.
+escape="harness-escape-$$"
+# Stub on PATH, one phase, dry run: if the check ever regresses, nothing real is called.
+( cd "$FACTORY_DIR" && PATH="$STUB_DIR:$PATH" STUB_MODE=noop FACTORY_DRY_RUN=1 \
+  ./factory.sh "$SPEC" --name "../$escape" --only 00-plan ) > "$STUB_DIR/escape.log" 2>&1
+expect_exit "$?" 1 "factory.sh refuses a name containing ../"
+if [ -e "$FACTORY_DIR/$escape" ]; then
+  fail "factory.sh created $FACTORY_DIR/$escape outside runs/"
+  rm -rf "${FACTORY_DIR:?}/$escape"
+else
+  pass "nothing was created outside runs/"
+fi
+mkdir -p "$FACTORY_DIR/$escape-r1"
+( cd "$FACTORY_DIR" && PATH="$STUB_DIR:$PATH" STUB_MODE=quota FACTORY_DRY_RUN=1 \
+  ./measure.sh "$SPEC" --runs 1 --name "../$escape" ) > "$STUB_DIR/escape-m.log" 2>&1
+expect_exit "$?" 1 "measure.sh refuses a name containing ../"
+if [ -d "$FACTORY_DIR/$escape-r1" ]; then
+  pass "the directory outside runs/ was not deleted"
+else
+  fail "measure.sh deleted $FACTORY_DIR/$escape-r1"
+fi
+rm -rf "${FACTORY_DIR:?}/$escape-r1"
+
 rm -rf "${FACTORY_DIR:?}"/runs/harness-noop "${FACTORY_DIR:?}"/runs/harness-quota \
        "${FACTORY_DIR:?}"/runs/harness-session "${FACTORY_DIR:?}"/runs/harness-leak \
        "${FACTORY_DIR:?}"/runs/harness-write "${FACTORY_DIR:?}"/runs/harness-measure-r* \

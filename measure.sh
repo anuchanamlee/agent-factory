@@ -58,6 +58,10 @@ done
 case "$RUNS" in ''|*[!0-9]*) die "--runs takes a number" ;; esac
 [ "$RUNS" -ge 1 ] || die "--runs must be at least 1"
 [ -n "$BASE" ] || BASE="$(basename "${SPEC%.*}")-measure"
+# Each run directory is rm -rf'd before reuse, so the name must not leave runs/.
+case "$BASE" in
+  *..*|*[!A-Za-z0-9._-]*) die "--name may only use letters, digits, '.', '_' and '-' (got: $BASE)" ;;
+esac
 
 REPORT="$FACTORY_DIR/runs/$BASE-report.txt"
 ABORTED=0

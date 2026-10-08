@@ -176,6 +176,11 @@ done
 [ -f "$SPEC_ARG" ] || die "spec file not found: $SPEC_ARG"
 SPEC_PATH="$(cd "$(dirname "$SPEC_ARG")" && pwd)/$(basename "$SPEC_ARG")"
 [ -n "$NAME" ] || NAME="$(basename "${SPEC_ARG%.*}")"
+# The name becomes a directory under runs/ that later gets deleted and rebuilt.
+# A slash or ".." would point that at a directory outside runs/.
+case "$NAME" in
+  *..*|*[!A-Za-z0-9._-]*) die "--name may only use letters, digits, '.', '_' and '-' (got: $NAME)" ;;
+esac
 
 PROJECT_DIR="$FACTORY_DIR/runs/$NAME"
 META_DIR="$PROJECT_DIR/.factory"
