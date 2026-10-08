@@ -82,12 +82,12 @@ step.
 
 Read this before running anything here on a machine you use for other work.
 
-- **The process reaper is machine-wide.** After every phase, `reap_project_processes` force-kills
-  (`taskkill /T /F`) `node.exe` and `cmd.exe` processes whose command line names the project directory **and every `node.exe` that
-  started after the phase began** - whoever started it. That is how it catches a `node server.js` left behind by
-  the model, but it will also kill an unrelated node app, bot or tool that happened to start during the phase.
-  `test/harness-test.sh` triggers the same reaper. Run both on a machine (or VM) with nothing else starting node
-  processes; CI runs the harness on a fresh Windows runner for this reason.
+- **Leftover processes are stopped per phase, and only the phase's own.** Each model call runs inside a Windows
+  Job Object (`tools/run-in-job.ps1`, `run_tracked` in `factory.sh`). Everything started from inside - including a
+  `node server.js` the model leaves running in the background - belongs to the job and is terminated when the call
+  ends. A process started by anything else is never in the job, so other apps on the machine are not affected
+  (`test/reaper-test.sh` checks exactly that). Without `powershell.exe` nothing is cleaned up. Until 2026-10-08 the
+  reaper instead killed every new `node.exe` on the machine during a phase.
 - **The model gets a shell.** Phases run `claude -p` with the `Bash`, `Edit` and `Write` tools and
   `--permission-mode auto` by default (`FACTORY_PERM`). "Work only inside the current directory" is an
   instruction in the prompt, not a sandbox. For unattended runs, use a VM or container.
@@ -163,11 +163,17 @@ a measurement is later computed from, so a wrong row is a wrong pass rate.
 Also covered: a run name containing `../` is refused by both `factory.sh` and `measure.sh` before anything
 is created or deleted.
 
-Result on 2026-10-08 (Windows, Git Bash, Node 24), run with `powershell.exe` hidden from `PATH` so the reaper
-could not touch other processes on that machine: every check passed except the two that need PowerShell to hold
-a file lock ("a run directory that cannot be cleared"), and the "leaked process was reaped" check, which
-reports ok without PowerShell but is then not checking anything. The full harness, with PowerShell, has not been
-run since these changes; CI is set up to do that on a clean runner but has not run on GitHub yet.
+`./test/reaper-test.sh` (also run by the harness): a phase leaks two servers and keeps working; one second in,
+an unrelated node process starts outside the factory. Afterwards the leaked servers must be gone and the
+unrelated process must still be running. It only ever stops processes it started itself, so it is safe to run
+on a machine with other node programs.
+
+Results on 2026-10-08 (Windows, Git Bash, Node 24): `reaper-test.sh` passed with PowerShell available, and
+every node process that existed before the run was still alive after it; with the job disabled it fails, as it
+should. The full harness was run only with `powershell.exe` hidden from `PATH` (other node apps were running on
+that machine): every check passed except the three that need PowerShell (the file-lock pair and the
+reaper-test call), and the leak check is vacuous in that mode. CI runs the full harness on a clean Windows
+runner but has not run on GitHub yet.
 
 Not covered by tests: the real gates against a real generated project, the deploy phase, and any real model.
 
@@ -226,7 +232,7 @@ commit.
 ## Limitations
 
 - No measured success rate yet: `measure.sh` exists, but this repository contains no completed measurement.
-- Process reaping only works on Windows, and it is machine-wide (see Safety).
+- Process cleanup only works on Windows (Job Objects via PowerShell); elsewhere leaked servers are not stopped.
 - The generated stack is fixed (Next.js + SQLite + Docker/Caddy); specs are written in Thai.
 - `shellcheck` is not part of the checks.
 
