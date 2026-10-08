@@ -94,54 +94,28 @@ tree_fingerprint() {
     | LC_ALL=C sort | cksum ) || echo "unreadable"
 }
 
-# Any node process alive right now, as "pid<TAB>commandline" lines.
-# Prints "ok" and then a pid per line. The marker matters: an empty list and a
-# failed lookup are the same string otherwise, and the reaper must tell them
-# apart - "nothing was running" licenses it to kill whatever appears next, while
-# "the lookup failed" must not.
-node_snapshot() {
-  local pids
-  command -v powershell.exe >/dev/null 2>&1 || return 0
-  pids="$(powershell.exe -NoProfile -NonInteractive -Command '
-    Get-CimInstance Win32_Process |
-      Where-Object { $_.Name -eq "node.exe" } |
-      ForEach-Object { $_.ProcessId }
-  ' 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+$')" || pids=""
-  printf 'ok\n%s\n' "$pids"
-}
-
-# Two ways of spotting the same leak, because neither alone is enough:
+# Run one bash script so that every process it starts - including a server the
+# model leaves running in the background, which holds files open on Windows and
+# breaks a later phase - is stopped when the script ends, and nothing else is.
 #
-#   by path  - the command line names the project directory. Catches npm running
-#              next out of node_modules. Misses `node server.js`, which is what
-#              a Next standalone build is started as: no path in the command line
-#              at all, and Windows will not tell you a process's directory.
-#   by age   - a node process that did not exist before this attempt began. The
-#              orchestrator starts none of its own, so anything new belongs to
-#              the phase. This is what caught the standalone server that held
-#              .next open through three phases on 7 Sep.
+# On Windows the script runs inside a Job Object (tools/run-in-job.ps1): a
+# process belongs to the job only if it was started from inside it, even after
+# it detaches from its parent, so the cleanup can never reach another program's
+# processes. Without powershell.exe the script runs plainly and nothing is
+# cleaned up.
 #
-# Only node.exe and the cmd.exe npm wraps it in are ever killed, so the
-# orchestrator's own bash and the claude CLI cannot match.
-reap_project_processes() {
-  local dir="$1" before="${2:-}" win_dir
-  command -v powershell.exe >/dev/null 2>&1 || return 0
-  win_dir="$(cd "$dir" && pwd -W 2>/dev/null || echo "$dir")"
-  PS_DIR="$win_dir" PS_BEFORE="$(echo "$before" | tr '\n' ',')" \
-  powershell.exe -NoProfile -NonInteractive -Command '
-    $d = $env:PS_DIR.Replace("/", "\").TrimEnd("\")
-    $raw = @($env:PS_BEFORE -split "," | Where-Object { $_ })
-    $snapOk = $raw.Count -gt 0 -and $raw[0] -eq "ok"
-    $before = @($raw | Select-Object -Skip 1 | ForEach-Object { [int]$_ })
-    Get-CimInstance Win32_Process |
-      Where-Object {
-        $_.Name -in @("node.exe", "cmd.exe") -and $_.CommandLine -and (
-          $_.CommandLine.Replace("/", "\").Contains($d) -or
-          ($_.Name -eq "node.exe" -and $snapOk -and $before -notcontains $_.ProcessId)
-        )
-      } |
-      ForEach-Object { taskkill /PID $_.ProcessId /T /F 2>&1 | Out-Null }
-  ' >/dev/null 2>&1 || true
+# This replaces a reaper that killed every node.exe appearing anywhere on the
+# machine during a phase, which also killed unrelated programs started then.
+run_tracked() {
+  local script="$1"
+  if command -v powershell.exe >/dev/null 2>&1 && command -v cygpath >/dev/null 2>&1; then
+    powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+      -File "$(cygpath -w "$FACTORY_DIR/tools/run-in-job.ps1")" \
+      -Bash "$(cygpath -w "$(command -v bash)")" \
+      -Script "$(cygpath -w "$script")"
+  else
+    bash "$script"
+  fi
 }
 
 QUOTA_EXIT=3
@@ -294,11 +268,8 @@ run_phase() {
 
     build_prompt "$phase" "$failure" > "$prompt_file"
 
-    local fp_before fp_after nodes_before
+    local fp_before fp_after
     fp_before="$(tree_fingerprint "$PROJECT_DIR")"
-    # Who was running before the model got its turn - anything node-shaped that
-    # appears after this list belongs to the phase, whatever its command line says.
-    nodes_before="$(node_snapshot)"
 
     if [ -n "${FACTORY_DRY_RUN:-}" ]; then
       say "dry run: would call claude --model $PHASE_MODEL --effort $PHASE_EFFORT"
@@ -306,12 +277,15 @@ run_phase() {
       echo "(dry run - no model call)" > "$out_file"
     else
       local claude_rc=0
-      ( cd "$PROJECT_DIR" && claude -p "$(cat "$prompt_file")" \
-        --model "$PHASE_MODEL" \
-        --effort "$PHASE_EFFORT" \
-        --permission-mode "$PERM" \
-        --allowedTools $ALLOWED_TOOLS \
-        --output-format text ) 2>&1 | tee "$out_file" || claude_rc=$?
+      # The call is written to a script (kept next to the prompt, under .factory/
+      # so the change fingerprint ignores it) and run through run_tracked.
+      local run_script="$META_DIR/logs/$phase-a$attempt.run.sh"
+      {
+        printf 'cd %q || exit 1\n' "$PROJECT_DIR"
+        printf 'exec claude -p "$(cat %q)" --model %q --effort %q --permission-mode %q --allowedTools %s --output-format text\n' \
+          "$prompt_file" "$PHASE_MODEL" "$PHASE_EFFORT" "$PERM" "$ALLOWED_TOOLS"
+      } > "$run_script"
+      run_tracked "$run_script" 2>&1 | tee "$out_file" || claude_rc=$?
       if [ "$claude_rc" -ne 0 ]; then
         say "claude exited non-zero on $phase (see $out_file)"
         # Only a non-zero exit counts as running dry: the same words inside a
@@ -328,10 +302,8 @@ run_phase() {
       fi
       fi
 
-    # Before anything reads the tree: whatever the model left running still has
-    # file handles open, and on Windows an open handle is a build failure two
-    # phases later rather than an error here.
-    reap_project_processes "$PROJECT_DIR" "$nodes_before"
+    # Whatever the model left running was stopped when run_tracked returned, so no
+    # open file handle survives into the fingerprint or the gate.
 
     fp_after="$(tree_fingerprint "$PROJECT_DIR")"
     if [ -z "${FACTORY_DRY_RUN:-}" ] && [ "$PHASE_ALLOW_NO_CHANGE" != "1" ] \

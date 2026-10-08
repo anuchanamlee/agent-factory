@@ -44,18 +44,14 @@ expect_exit() {
   if [ "$1" = "$2" ]; then pass "$3"; else fail "$3 (exit $1, expected $2)"; fi
 }
 
-# Every node process alive, by pid. Compared before and after a phase, because
-# matching on the command line has the same blind spot the reaper had: a server
-# started as `node server.js` names no directory at all, and that is exactly the
-# leak that survived three phases on 7 Sep. A test that cannot see it would pass
-# while the thing it checks is broken.
-all_node_pids() {
-  powershell.exe -NoProfile -NonInteractive -Command '
-    Get-CimInstance Win32_Process |
-      Where-Object { $_.Name -eq "node.exe" } |
-      ForEach-Object { $_.ProcessId }
-  ' 2>/dev/null | tr -d '' | grep -E '^[0-9]+$' | sort
-
+# Pids of the stub's leaked servers (command line names leaked-server.js), whether
+# started with a path or as plain `node leaked-server.js`. Read-only: the test
+# never kills anything it did not start.
+leaked_pids() {
+  powershell.exe -NoProfile -NonInteractive -Command "
+    Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" |
+      Where-Object { \$_.CommandLine -like '*leaked-server.js*' } |
+      ForEach-Object { \$_.ProcessId }" 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+$'
 }
 
 run_phase() {
@@ -96,15 +92,24 @@ expect_exit "$rc" 3 "the measurement stops instead of reporting a rate off a run
 
 echo
 echo "a model that leaves a server running"
-nodes_pre="$(all_node_pids)"
 run_phase harness-leak leak; rc=$?
-leftover="$(comm -13 <(printf '%s
-' "$nodes_pre") <(all_node_pids) | head -1)"
+leftover="$(leaked_pids | tr '\n' ' ')"
 if [ -z "$leftover" ]; then
-  pass "the leaked process was reaped before the next phase could inherit it"
+  pass "the leaked processes were stopped before the next phase could inherit them"
 else
-  fail "a node process survived the phase (pid $leftover) - it will hold files open later"
-  powershell.exe -NoProfile -NonInteractive -Command "taskkill /PID $leftover /T /F" >/dev/null 2>&1 || true
+  fail "leaked servers survived the phase (pids $leftover) - they will hold files open later"
+  for p in $leftover; do
+    powershell.exe -NoProfile -NonInteractive -Command "Stop-Process -Id $p -Force" >/dev/null 2>&1 || true
+  done
+fi
+
+echo
+echo "stopping leaked servers must not touch anyone else's processes"
+if bash "$FACTORY_DIR/test/reaper-test.sh" > "$STUB_DIR/reaper.log" 2>&1; then
+  pass "an unrelated node process started during a phase survives (test/reaper-test.sh)"
+else
+  fail "test/reaper-test.sh failed:"
+  sed 's/^/        /' "$STUB_DIR/reaper.log"
 fi
 
 echo

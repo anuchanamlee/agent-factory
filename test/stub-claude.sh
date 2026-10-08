@@ -56,6 +56,18 @@ case "${STUB_MODE:-noop}" in
     echo "Started the dev server so you can look at it."
     exit 0
     ;;
+  leak-slow)
+    # Same leak, but the "model" keeps working for a few seconds. That leaves a
+    # window in which test/reaper-test.sh starts an unrelated node process from
+    # outside the factory - the kind of process the old reaper killed by mistake.
+    printf 'setInterval(function(){}, 1e9);\n' > leaked-server.js
+    node "$PWD/leaked-server.js" >/dev/null 2>&1 &
+    node leaked-server.js >/dev/null 2>&1 &
+    printf 'left a server running\n' > leaked.txt
+    sleep 4
+    echo "Started the dev server so you can look at it."
+    exit 0
+    ;;
   write)
     echo "Wrote some notes."
     printf 'stub was here\n' > stub-output.txt
