@@ -1,6 +1,18 @@
 # agent-factory
 
-One spec file in, a deployed Next.js project out, with nobody watching.
+One spec file in, a deployed Next.js project out, with nobody watching: a bash orchestrator that drives the
+`claude` CLI one phase at a time and believes only exit codes.
+
+**Status:** solo project (Aug–Sep 2026), experimental. Supported platform: Windows + Git Bash.
+No measured success rate is published yet (see [Limitations](#limitations)).
+
+```bash
+./tools/spec-lint.sh specs/minicat.md          # check a spec: reads the file, no model call
+./test/harness-test.sh                         # orchestrator tests with a stub model - read "Safety" first
+./factory.sh specs/minicat.md --name minicat   # a real run: spends Claude quota, needs Docker for phase 50
+```
+
+## How it works
 
 `factory.sh` walks six phases. Each phase is a single headless `claude -p` call
 followed by a verification gate that is an ordinary command with an exit code —
@@ -11,6 +23,8 @@ Why it is built this way, with sources: [`DESIGN.md`](DESIGN.md).
 
 ## Requirements
 
+- Windows with Git Bash. `powershell.exe` is used to find and stop leaked node processes; on Linux/macOS that
+  step silently does nothing (`factory.sh`, `node_snapshot` / `reap_project_processes`)
 - Node 24 (`better-sqlite3` v12 ships prebuilt binaries for it)
 - Docker with a running daemon — only the deploy phase needs it
 - `claude` on your PATH, logged in
@@ -63,6 +77,24 @@ what it built.
 a human sets `FACTORY_CONFIRM_PROD=yes`. Deploying is a decision, not a build
 step.
 
+## Safety
+
+Read this before running anything here on a machine you use for other work.
+
+- **The process reaper is machine-wide.** After every phase, `reap_project_processes` force-kills
+  (`taskkill /T /F`) node processes whose command line names the project directory **and every `node.exe` that
+  started after the phase began** - whoever started it. That is how it catches a `node server.js` left behind by
+  the model, but it will also kill an unrelated node app, bot or tool that happened to start during the phase.
+  `test/harness-test.sh` triggers the same reaper. Run both on a machine (or VM) with nothing else starting node
+  processes; CI runs the harness on a fresh Windows runner for this reason.
+- **The model gets a shell.** Phases run `claude -p` with the `Bash`, `Edit` and `Write` tools and
+  `--permission-mode auto` by default (`FACTORY_PERM`). "Work only inside the current directory" is an
+  instruction in the prompt, not a sandbox. For unattended runs, use a VM or container.
+- **Deploying to a real host needs a human.** `gates/deploy.sh` refuses `FACTORY_DEPLOY_TARGET=vps` unless
+  `FACTORY_CONFIRM_PROD=yes` is set.
+- Run names are restricted to letters, digits, `.`, `_`, `-` because `measure.sh` deletes `runs/<name>-rN`
+  before each run.
+
 ## Knobs
 
 | Variable | Effect |
@@ -70,6 +102,7 @@ step.
 | `FACTORY_DRY_RUN=1` | build every prompt, run every gate, make no model call |
 | `FACTORY_MODEL` / `FACTORY_EFFORT` | override every phase at once |
 | `FACTORY_MAX_ATTEMPTS` | gate retries per phase (default 2) |
+| `FACTORY_PERM` | `auto` (default), `acceptEdits` or `bypassPermissions` - the model's permission mode |
 | `FACTORY_NOTES_LIMIT` | bytes of `NOTES.md` carried into a prompt (default 6000) |
 | `FACTORY_DEPLOY_TARGET` | `local` (default) or `vps` |
 | `FACTORY_VPS` / `FACTORY_CONFIRM_PROD` | required together to deploy to a host |
@@ -126,6 +159,17 @@ stopped by the session cap, one that leaves a server running behind it, and one
 that writes the wrong file. The test then reads `metrics.tsv` — the row is what
 a measurement is later computed from, so a wrong row is a wrong pass rate.
 
+Also covered: a run name containing `../` is refused by both `factory.sh` and `measure.sh` before anything
+is created or deleted.
+
+Result on 2026-10-08 (Windows, Git Bash, Node 24), run with `powershell.exe` hidden from `PATH` so the reaper
+could not touch other processes on that machine: every check passed except the two that need PowerShell to hold
+a file lock ("a run directory that cannot be cleared"), and the "leaked process was reaped" check, which
+reports ok without PowerShell but is then not checking anything. The full harness, with PowerShell, has not been
+run since these changes; CI is set up to do that on a clean runner but has not run on GitHub yet.
+
+Not covered by tests: the real gates against a real generated project, the deploy phase, and any real model.
+
 `FACTORY_DRY_RUN=1` does not cover this ground: it skips the no-op check on
 purpose and never reaches the code that reads the model's exit status. Those are
 exactly the two paths that let a ruined run be reported as a result.
@@ -165,3 +209,26 @@ and more retries only buys the same failure at four times the price.
 The dangerous failure is the opposite one: a gate that passes while the thing it
 checks is broken. When you find one, the fix is a stricter gate, in the same
 commit.
+
+## Key decisions
+
+- **One fresh `claude -p` session per phase, state on disk.** No `--continue`/`--resume`; phases hand over through
+  `PLAN.md`, `TASKS.md` and `.factory/NOTES.md`, so a run can be resumed with `--from` and long contexts never build up.
+- **Exit codes, not the model, decide a pass.** Each gate is an ordinary script; the review phase is the only one
+  that uses a model as a checker, and it is followed by real HTTP requests.
+- **A phase that changed no file skips its gate**, and an exhausted quota exits 3, because both used to let a gate
+  grade the previous phase's work and record a false pass (both covered by the harness).
+- **Per-phase model and effort** (`pipeline/*.conf`): expensive model where a mistake propagates (plan, data, review,
+  deploy), cheaper where the stack is locked.
+- Background and sources (Thai): [`DESIGN.md`](DESIGN.md).
+
+## Limitations
+
+- No measured success rate yet: `measure.sh` exists, but this repository contains no completed measurement.
+- Process reaping only works on Windows, and it is machine-wide (see Safety).
+- The generated stack is fixed (Next.js + SQLite + Docker/Caddy); specs are written in Thai.
+- `shellcheck` is not part of the checks.
+
+## License
+
+License: not yet specified.
