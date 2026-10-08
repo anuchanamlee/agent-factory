@@ -112,6 +112,7 @@ SERVER_PID=$!
 # $! is a Git Bash (MSYS) pid, not a Windows pid; taskkill needs the Windows
 # one, or it would act on whatever unrelated process has that number.
 SERVER_WINPID="$(cat "/proc/$SERVER_PID/winpid" 2>/dev/null || true)"
+[ -n "$SERVER_WINPID" ] || echo "note: no Windows pid for the server; it will be stopped with kill only (its children may survive)"
 
 ready=0
 for _ in $(seq 1 60); do

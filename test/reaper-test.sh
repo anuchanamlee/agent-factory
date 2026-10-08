@@ -45,17 +45,24 @@ leaked_now() {
       ForEach-Object { \$_.ProcessId }" 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+$'
 }
 
-alive() {
-  powershell.exe -NoProfile -NonInteractive -Command \
-    "if (Get-Process -Id $1 -ErrorAction SilentlyContinue) { 'yes' }" 2>/dev/null | tr -d '\r' | grep -q yes
+# "Is pid $1 still our process?" Windows reuses pids quickly, so a pid counts as
+# ours only while its command line still names the script we started ($2).
+alive_as() {
+  powershell.exe -NoProfile -NonInteractive -Command "
+    \$p = Get-CimInstance Win32_Process -Filter 'ProcessId=$1'
+    if (\$p -and \$p.CommandLine -like '*$2*') { 'yes' }" 2>/dev/null | tr -d '\r' | grep -q yes
+}
+
+stop_if_ours() {
+  alive_as "$1" "$2" && powershell.exe -NoProfile -NonInteractive -Command \
+    "Stop-Process -Id $1 -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1
+  return 0
 }
 
 cleanup() {
   local p
-  for p in $bystander_winpid $SEEN; do
-    powershell.exe -NoProfile -NonInteractive -Command \
-      "Stop-Process -Id $p -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1
-  done
+  [ -n "$bystander_winpid" ] && stop_if_ours "$bystander_winpid" bystander.js
+  for p in $SEEN; do stop_if_ours "$p" leaked-server.js; done
   rm -rf "${FACTORY_DIR:?}/runs/$NAME" "$STUB_DIR"
 }
 trap cleanup EXIT
@@ -101,14 +108,14 @@ else
 fi
 
 survivors=""
-for p in $SEEN; do alive "$p" && survivors="$survivors $p"; done
+for p in $SEEN; do alive_as "$p" leaked-server.js && survivors="$survivors $p"; done
 if [ -n "$SEEN" ] && [ -z "$survivors" ]; then
   pass "every leaked server seen during the phase was stopped"
 elif [ -n "$survivors" ]; then
   fail "leaked servers still running:$survivors"
 fi
 
-if alive "$bystander_winpid"; then
+if alive_as "$bystander_winpid" bystander.js; then
   pass "the unrelated node process started during the phase is still running"
 else
   fail "the unrelated node process (pid $bystander_winpid) was killed"
