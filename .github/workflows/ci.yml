@@ -28,6 +28,6 @@ jobs:
       - name: Shell syntax
         run: for f in $(git ls-files '*.sh'); do bash -n "$f"; done
       - name: Spec lint
-        run: for s in specs/minicat.md specs/post-scheduler.md specs/customer-desk.md; do ./tools/spec-lint.sh "$s"; done
+        run: for s in specs/minicat.md specs/post-scheduler.md specs/customer-desk.md; do bash tools/spec-lint.sh "$s"; done
       - name: Harness test (stub CLI, no quota)
-        run: ./test/harness-test.sh
+        run: bash test/harness-test.sh
