@@ -83,8 +83,8 @@ cleanup() {
     # npm spawns `next start` as a child. Killing npm alone leaves that child
     # alive holding the SQLite handle, which is what makes the rm below fail on
     # Windows. taskkill /T takes the tree; the plain kill is the fallback.
-    if command -v taskkill >/dev/null 2>&1; then
-      taskkill //PID "$SERVER_PID" //T //F >/dev/null 2>&1 || true
+    if [ -n "${SERVER_WINPID:-}" ] && command -v taskkill >/dev/null 2>&1; then
+      taskkill //PID "$SERVER_WINPID" //T //F >/dev/null 2>&1 || true
     fi
     kill "$SERVER_PID" 2>/dev/null || true
     pkill -P "$SERVER_PID" 2>/dev/null || true
@@ -109,6 +109,9 @@ fi
 echo "-- starting server on :$PORT"
 PORT="$PORT" npm start > "$LOG" 2>&1 &
 SERVER_PID=$!
+# $! is a Git Bash (MSYS) pid, not a Windows pid; taskkill needs the Windows
+# one, or it would act on whatever unrelated process has that number.
+SERVER_WINPID="$(cat "/proc/$SERVER_PID/winpid" 2>/dev/null || true)"
 
 ready=0
 for _ in $(seq 1 60); do

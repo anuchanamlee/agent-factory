@@ -164,13 +164,13 @@ Also covered: a run name containing `../` is refused by both `factory.sh` and `m
 is created or deleted.
 
 `./test/reaper-test.sh` (also run by the harness): a phase leaks two servers and keeps working; one second in,
-an unrelated node process starts outside the factory. Afterwards the leaked servers must be gone and the
-unrelated process must still be running. It only ever stops processes it started itself, so it is safe to run
-on a machine with other node programs.
+an unrelated node process starts outside the factory. The test checks that the phase really ran and that the
+leaked servers were seen running, then that each of them is gone afterwards and the unrelated process is still
+running. Its own cleanup stops only pids it recorded, so it is safe to run on a machine with other node programs.
 
-Results on 2026-10-08 (Windows, Git Bash, Node 24): `reaper-test.sh` passed with PowerShell available, and
-every node process that existed before the run was still alive after it; with the job disabled it fails, as it
-should. The full harness was run only with `powershell.exe` hidden from `PATH` (other node apps were running on
+Results on 2026-10-08 (Windows, Git Bash, Node 24): `reaper-test.sh` passed with PowerShell available; with the
+job disabled it fails, as it should. A manual before/after listing of all node processes around the passing run
+(not part of the test) showed none of the machine's existing node processes had stopped. The full harness was run only with `powershell.exe` hidden from `PATH` (other node apps were running on
 that machine): every check passed except the three that need PowerShell (the file-lock pair and the
 reaper-test call), and the leak check is vacuous in that mode. CI runs the full harness on a clean Windows
 runner but has not run on GitHub yet.

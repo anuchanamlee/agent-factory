@@ -134,6 +134,7 @@ $f.Close()
 PS
 powershell.exe -NoProfile -File "$STUB_DIR/hold.ps1" \
   "$(cd "$holddir" && pwd -W)/locked.bin" >/dev/null 2>&1 &
+hold_winpid="$(cat "/proc/$!/winpid" 2>/dev/null || true)"
 sleep 3
 ( cd "$FACTORY_DIR" && FACTORY_DRY_RUN=1 PATH="$STUB_DIR:$PATH" \
   ./measure.sh "$SPEC" --runs 1 --name harness-hold ) > "$STUB_DIR/hold.log" 2>&1
@@ -144,10 +145,9 @@ if grep -q "cannot clear" "$STUB_DIR/hold.log"; then
 else
   fail "it failed without saying a leftover directory was the reason"
 fi
-powershell.exe -NoProfile -NonInteractive -Command "
-  Get-CimInstance Win32_Process |
-    Where-Object { \$_.CommandLine -like '*hold.ps1*' } |
-    ForEach-Object { taskkill /PID \$_.ProcessId /T /F 2>&1 | Out-Null }" >/dev/null 2>&1 || true
+# Stop only the lock holder this test started, by its own pid.
+[ -n "$hold_winpid" ] && powershell.exe -NoProfile -NonInteractive -Command \
+  "Stop-Process -Id $hold_winpid -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
 sleep 1; rm -rf "$holddir" "$FACTORY_DIR/runs/harness-hold-report.txt" 2>/dev/null || true
 
 echo

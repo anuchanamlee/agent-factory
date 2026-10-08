@@ -16,6 +16,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# Everything that can fail while setting up the job (including Add-Type under a
+# locked-down PowerShell) is inside this try: a failure means "no cleanup", never
+# "the model call does not run".
+try {
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -67,8 +71,6 @@ public static class FactoryJob {
   }
 }
 '@
-
-try {
   [FactoryJob]::Enter()
 } catch {
   # Never fall back to killing by name or age: without a job, nothing is reaped.
