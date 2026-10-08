@@ -1,0 +1,33 @@
+# Offline checks only: no model call, no Docker, no deploy.
+#
+# Runs on Windows because the process reaper and two harness checks use
+# powershell.exe. A throwaway runner is also the safe place for the harness:
+# the reaper kills any node.exe started during a phase, which on a developer
+# machine can include unrelated processes (see README, "Safety").
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Shell syntax
+        run: for f in $(git ls-files '*.sh'); do bash -n "$f"; done
+      - name: Spec lint
+        run: for s in specs/minicat.md specs/post-scheduler.md specs/customer-desk.md; do ./tools/spec-lint.sh "$s"; done
+      - name: Harness test (stub CLI, no quota)
+        run: ./test/harness-test.sh
