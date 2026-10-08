@@ -23,9 +23,9 @@ Why it is built this way, with sources: [`DESIGN.md`](DESIGN.md).
 
 ## Requirements
 
-- Bash. Windows + Git Bash is the platform it was built and tested on: `powershell.exe` is used to find and stop
-  leaked node processes, and on Linux/macOS that step silently does nothing (`factory.sh`, `node_snapshot` /
-  `reap_project_processes`); two harness checks also need PowerShell
+- Bash. Windows + Git Bash is the platform it was built and tested on: `powershell.exe` runs each model call in
+  a Job Object so leftover processes can be stopped (`run_tracked` in `factory.sh`); on Linux/macOS calls run
+  without that cleanup. `test/reaper-test.sh` and the harness's file-lock checks also need PowerShell
 - Node 24 (`better-sqlite3` v12 ships prebuilt binaries for it)
 - Docker with a running daemon — only the deploy phase needs it
 - `claude` on your PATH, logged in
