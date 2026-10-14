@@ -165,3 +165,7 @@ and more retries only buys the same failure at four times the price.
 The dangerous failure is the opposite one: a gate that passes while the thing it
 checks is broken. When you find one, the fix is a stricter gate, in the same
 commit.
+
+## License
+
+Source available for review only — all rights reserved. See [LICENSE](LICENSE).

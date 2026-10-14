@@ -95,7 +95,7 @@ Next.js 16 (App Router) · TypeScript · Tailwind · SQLite (better-sqlite3, raw
 NextAuth v5 credentials + bcryptjs · รูปเก็บ local disk + sharp บีบตอนอัป
 Docker Compose (web + caddy) · migration เป็น .sql + PRAGMA user_version
 
-**Gotchas ที่ต้องทำตาม** (เจอมาแล้วจริงจาก livincolor):
+**Gotchas ที่ต้องทำตาม** (เจอมาแล้วจริงจากโปรเจกต์ที่ขึ้น production):
 - middleware ต้องเป็น `proxy.ts` ที่ **root** ไม่ใช่ใน `src/` — ไม่งั้น Turbopack dev ไม่รัน = route ไม่ถูก protect
 - `bcryptjs` ต้องอยู่ใน `serverExternalPackages` ของ next.config
 - `better-sqlite3` ใช้ v12 (prebuilt สำหรับ node 24)
