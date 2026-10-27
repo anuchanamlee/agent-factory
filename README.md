@@ -1,5 +1,7 @@
 # agent-factory
 
+[![CI](https://github.com/anuchanamlee/agent-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/anuchanamlee/agent-factory/actions/workflows/ci.yml)
+
 One spec file in, a deployed Next.js project out, with nobody watching.
 
 `factory.sh` walks six phases. Each phase is a single headless `claude -p` call
@@ -129,6 +131,11 @@ a measurement is later computed from, so a wrong row is a wrong pass rate.
 `FACTORY_DRY_RUN=1` does not cover this ground: it skips the no-op check on
 purpose and never reaches the code that reads the model's exit status. Those are
 exactly the two paths that let a ruined run be reported as a result.
+
+CI runs it on `windows-latest` under Git Bash, where the factory itself runs: the
+process reaper and the locked-directory case use `powershell.exe` and `taskkill`.
+On Linux and macOS those two cases print `skip` instead of passing without having
+checked anything.
 
 ## Measuring it
 

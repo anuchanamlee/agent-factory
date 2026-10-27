@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # The factory runs on Windows (Git Bash) and its process reaper uses
+  # powershell.exe and taskkill, so the harness is tested there for real.
+  harness-windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Harness test (stub model, no quota)
+        run: bash test/harness-test.sh
+
+  # Linux/macOS clones must be able to run the scripts as documented.
+  scripts-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scripts are executable and parse
+        run: |
+          for f in $(git ls-files '*.sh'); do
+            test -x "$f" || { echo "not executable: $f"; exit 1; }
+            bash -n "$f"
+          done
+      - name: Example specs pass spec-lint
+        run: |
+          ./tools/spec-lint.sh specs/minicat.md
+          ./tools/spec-lint.sh specs/post-scheduler.md
+      - name: The empty template is rejected
+        run: |
+          if ./tools/spec-lint.sh specs/_template.md; then
+            echo "spec-lint accepted the unfilled template"; exit 1
+          fi
+      - name: Harness test (Windows-only cases are reported as skipped)
+        run: ./test/harness-test.sh

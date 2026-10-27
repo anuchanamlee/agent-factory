@@ -25,6 +25,11 @@ chmod +x "$STUB_DIR/claude"
 trap 'rm -rf "$STUB_DIR"' EXIT
 
 pass() { printf '  ok   %s\n' "$*"; }
+skip() { printf '  skip %s\n' "$*"; }
+# The reaper and the file-lock case use powershell.exe and taskkill, so they
+# only mean something on Windows (Git Bash), where the factory actually runs.
+# Elsewhere they would pass without having checked anything; say so instead.
+ON_WINDOWS=0; command -v powershell.exe >/dev/null 2>&1 && ON_WINDOWS=1
 fail() { printf '  FAIL %s\n' "$*"; FAILURES=$((FAILURES + 1)); }
 
 # The result column of every row for a phase, space separated.
@@ -54,7 +59,8 @@ all_node_pids() {
     Get-CimInstance Win32_Process |
       Where-Object { $_.Name -eq "node.exe" } |
       ForEach-Object { $_.ProcessId }
-  ' 2>/dev/null | tr -d '' | grep -E '^[0-9]+$' | sort
+  ' 2>/dev/null | tr -d '
+' | grep -E '^[0-9]+$' | sort
 
 }
 
@@ -96,6 +102,9 @@ expect_exit "$rc" 3 "the measurement stops instead of reporting a rate off a run
 
 echo
 echo "a model that leaves a server running"
+if [ "$ON_WINDOWS" = 0 ]; then
+  skip "the reaper is Windows-only (no powershell.exe here)"
+else
 nodes_pre="$(all_node_pids)"
 run_phase harness-leak leak; rc=$?
 leftover="$(comm -13 <(printf '%s
@@ -105,6 +114,7 @@ if [ -z "$leftover" ]; then
 else
   fail "a node process survived the phase (pid $leftover) - it will hold files open later"
   powershell.exe -NoProfile -NonInteractive -Command "taskkill /PID $leftover /T /F" >/dev/null 2>&1 || true
+fi
 fi
 
 echo
@@ -117,6 +127,9 @@ fi
 
 echo
 echo "a run directory that cannot be cleared"
+if [ "$ON_WINDOWS" = 0 ]; then
+  skip "an open file only blocks deletion on Windows"
+else
 # The reaper handles a node process holding a file. This is the other case: a
 # holder it must not touch. Silence here means measuring on top of a previous
 # run and reporting its passes as this one's.
@@ -144,6 +157,7 @@ powershell.exe -NoProfile -NonInteractive -Command "
     Where-Object { \$_.CommandLine -like '*hold.ps1*' } |
     ForEach-Object { taskkill /PID \$_.ProcessId /T /F 2>&1 | Out-Null }" >/dev/null 2>&1 || true
 sleep 1; rm -rf "$holddir" "$FACTORY_DIR/runs/harness-hold-report.txt" 2>/dev/null || true
+fi
 
 echo
 echo "measure.sh meeting an exhausted account mid-measurement"
